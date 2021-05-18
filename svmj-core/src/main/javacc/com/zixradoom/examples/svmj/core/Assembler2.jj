@@ -1,0 +1,1650 @@
+
+options {
+  STATIC = false;
+  UNICODE_INPUT = true;
+}
+
+PARSER_BEGIN(Assembler2)
+
+package com.zixradoom.examples.svmj.core;
+
+import java.io.StringReader;
+import java.nio.ByteBuffer;
+import java.util.Map;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+
+import java.util.function.Consumer;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import com.zixradoom.examples.svmj.core.elf.*;
+
+public class Assembler2 {
+  
+  private static final Logger LOGGER = LoggerFactory.getLogger ( Assembler2.class );
+
+  // the base address is a global offset
+  // that is applyed to symbol declarations
+  private String fileName;
+  private int baseAddress = 0;
+  private int count = 0;
+  private boolean createObject;
+  private ELFRam elfObject;
+  private SectionRAM txt;
+  private SymbolTableSectionRAM stsr;
+  private RelocationSectionRAM rsr;
+  private StringTableSectionRAM strtab;
+  private StringTableSectionRAM shstrtab;
+  private ProgramBuilder pb;
+  private Map < String, Integer > symbolTable = new LinkedHashMap < String, Integer > ();
+
+  public void setBaseAddress ( int address ) {
+    this.baseAddress = address;
+  }
+  
+  public void setFileName ( String fileName ) {
+    this.fileName = fileName;
+  }
+  
+  public void setCreateObject ( boolean createObject ) {
+    this.createObject = createObject;
+  }
+  
+  public ELF getObject () {
+    return elfObject;
+  }
+  
+  public void finalizeObject () {
+    // do stuff here
+    // the pb contains our only .text section
+    
+    if ( fileName != null && stsr.getIndexOfFirstLocal () != -1 ) {
+      SymbolTableSectionRAM.Symbol file = stsr.newSymbol ( fileName );
+      file.setType ( Section.STT_FILE );
+      file.setSectionHeaderIndex ( Section.SHN_ABS );
+      List < SymbolTableSectionRAM.Symbol > data = stsr.getSymbols ();
+      data.remove ( file );
+      data.add ( 1, file );
+    }
+    
+    // ** index 1
+    txt.getHeader ().setType ( Section.SHT_PROGBITS );
+    txt.getHeader ().setFlags ( Section.SHF_ALLOC | Section.SHF_EXECINSTR );
+    // size of an instruction
+    txt.getHeader ().setEntrySize ( 4 );
+    txt.getHeader ().setNameOffset ( shstrtab.interString ( txt.getName () ) );
+    txt.setData ( pb.getProgram () );
+    
+    // ** index 2
+    stsr.getHeader ().setLink ( elfObject.indexOfSection ( strtab.getName () ) );
+    stsr.getHeader ().setInfo ( stsr.getIndexOfFirstGlobal () );
+    stsr.getHeader ().setNameOffset ( shstrtab.interString ( stsr.getName () ) );
+    
+    for ( SymbolTableSectionRAM.Symbol symbol : stsr.getSymbols () ) {
+      symbol.setNameOffset ( strtab.interString ( symbol.getName () ) );
+    }
+    
+    // ** sh index 3
+    rsr.getHeader ().setLink ( elfObject.indexOfSection ( stsr.getName () ) );
+    rsr.getHeader ().setInfo ( elfObject.indexOfSection ( txt.getName () ) );
+    rsr.getHeader ().setNameOffset ( shstrtab.interString ( rsr.getName () ) );
+    
+    // ** sh index 4
+    strtab.getHeader ().setFlags ( (int)strtab.getFlags () | Section.SHF_ALLOC );
+    strtab.getHeader ().setNameOffset ( shstrtab.interString ( strtab.getName () ) );
+    
+    // ** sh index 5
+    shstrtab.getHeader ().setFlags ( (int)shstrtab.getFlags () );
+    shstrtab.getHeader ().setNameOffset ( shstrtab.interString ( shstrtab.getName () ) );
+    
+    elfObject.setHeaderNameIndex ( elfObject.indexOfSection ( shstrtab.getName () ) );
+  }
+  
+  private void symbolDereference ( String label, int relocationType, Consumer < Integer > consumer ) {
+    if ( createObject ) {
+      if ( count == 1 ) {
+        if ( stsr.getSymbol ( label ) == null ) {
+          SymbolTableSectionRAM.Symbol symbol = stsr.newSymbol ( label );
+        }
+        consumer.accept ( 0 );
+      } else if ( count == 2 ) {
+        SymbolTableSectionRAM.Symbol symbol = stsr.getSymbol ( label );
+        if ( symbol == null ) {
+          throw new RuntimeException ( String.format ( "undefined symbol '%s'", symbol ) );
+        }
+        int location = pb.getCurrentAddress ();
+        consumer.accept ( (int)symbol.getValue () );
+        RelocationSectionRAM.RelocationRecord rr = rsr.newRecord ();
+        rr.setOffset ( location );
+        rr.setSymbol ( symbol );
+        rr.setType ( relocationType );
+      } else {
+        //only 2 passes allowed
+        throw new IllegalStateException ( String.format ( "pass %d", count ) ); 
+      }
+    } else {
+      if ( !symbolTable.containsKey ( label ) || symbolTable.get ( label ) == null ) {
+          throw new RuntimeException ( String.format ( "undefined label '%s'", label ) );
+      }
+      consumer.accept ( symbolTable.get ( label ) );
+    }
+  }
+
+  public static void main ( String[] args ) throws ParseException {
+    
+    String example = "" +
+      "_start:\n" +
+      "  ADD r4 r5 r6\n" +
+      "  SUBTRACT r7 r8 r9 ; stuff\n" +
+      "  MULTIPLY r10 r11 r12\n" +
+      "  DIVIDE r10 r11 r12\n" +
+      "stuff: ; stuff\n" +
+      "moreStuff:\n" +
+      "  STORE r1 r2" +
+      "  MOVE r1 r2" +
+      "  MOVE_I r10 11H" +
+      "  PUSH r10 r11" +
+      "  POP r10 r11" +
+      "  ENTER r10 r11" +
+      "  LEAVE r10 r11" +
+      "  CALL r10 r11" +
+      "  RETURN r13" +
+      "  NO_OP" +
+      "  AND r10 r11 r12" +
+      "  OR r10 r11 r12" +
+      "  XOR r10 r11 r12" +
+      "  NOT r10 r11" +
+      "  CMP r10 r11" +
+      "  JUMP r7" +
+      "  JUMP_I 7FH" +
+      "  JUMP_E r1" +
+      "  JUMP_E_I 7FH" +
+      "  JUMP_NE r1" +
+      "  JUMP_NE_I 7FH" +
+      "  JUMP_Z r1" +
+      "  JUMP_Z_I 7FH" +
+      "  JUMP_NZ r1" +
+      "  JUMP_NZ_I 7FH" +
+      "  HALT" +
+      "";
+    
+    Assembler2 parser = new Assembler2 ( new StringReader ( example ) );
+    
+    parser.Program ();
+    
+    /*
+    System.out.println ( "================================" );
+    for ( String label : parser.getSymbolTable ().keySet () ) {
+      System.out.printf ( "%8xH %s%n", parser.getSymbolTable ().get ( label ), label );
+    }
+    System.out.println ();
+    printProgram ( parser.getProgramBuilder ().getProgram () );
+    System.out.println ( "================================" );
+    */
+  }
+  
+  private static int readRegister ( Token t ) {
+    return Integer.valueOf ( t.image.substring ( 1, t.image.length () ) );
+  }
+  
+  private static int readHex ( Token t ) {
+    return Integer.parseUnsignedInt ( t.image.substring ( 0, t.image.length () - 1 ), 16 );
+  }
+  
+  private static int readDecimal ( Token t ) {
+    return Integer.parseInt ( t.image.trim () );
+  }
+  
+  private static void printProgram ( ByteBuffer data ) {
+    while ( data.hasRemaining () ) {
+      System.out.printf ( "%8xH %8xH%n", data.position (), data.getInt () );
+    }
+  }
+  
+  public ProgramBuilder getProgramBuilder () {
+    return pb;
+  }
+  
+  public Map < String, Integer > getSymbolTable () {
+    return symbolTable;
+  }
+}
+
+PARSER_END(Assembler2)
+
+/*****************************************************
+ * THE SVMJ ASSEMBLY TOKEN SPECIFICATION STARTS HERE *
+ *****************************************************/
+
+/* RESERVED WORDS */
+
+TOKEN :
+{
+  < HALT: "HALT" >
+| < LOAD: "LOAD" >
+| < LOAD_I: "LOAD_I" >
+| < LOAD_Y: "LOAD_Y" >
+| < LOAD_4X: "LOAD_4X" >
+| < STORE: "STORE" >
+| < STORE_Y: "STORE_Y" >
+| < STORE_4X: "STORE_4X" >
+| < MOVE: "MOVE" >
+| < MOVE_I: "MOVE_I" >
+| < ADD: "ADD" >
+| < SUBTRACT: "SUBTRACT" >
+| < MULTIPLY: "MULTIPLY" >
+| < DIVIDE: "DIVIDE" >
+| < PUSH: "PUSH" >
+| < POP: "POP" >
+| < ENTER: "ENTER" >
+| < LEAVE: "LEAVE" >
+| < CALL: "CALL" >
+| < CALL_I: "CALL_I" >
+| < RETURN: "RETURN" >
+| < NO_OP: "NO_OP" >
+| < AND: "AND" >
+| < OR: "OR" >
+| < NOT: "NOT" >
+| < XOR: "XOR" >
+| < CMP: "CMP" >
+| < CMP_Z: "CMP_Z" >
+| < JUMP: "JUMP" >
+| < JUMP_I: "JUMP_I" >
+| < JUMP_Y: "JUMP_Y" >
+| < JUMP_E: "JUMP_E" >
+| < JUMP_E_I: "JUMP_E_I" >
+| < JUMP_NE: "JUMP_NE" >
+| < JUMP_NE_I: "JUMP_NE_I" >
+| < JUMP_Z: "JUMP_Z" >
+| < JUMP_Z_I: "JUMP_Z_I" >
+| < JUMP_NZ: "JUMP_NZ" >
+| < JUMP_NZ_I: "JUMP_NZ_I" >
+| < JUMP_NZ_Y: "JUMP_NZ_Y" >
+| < TLB_FLUSH: "TLB_FLUSH" >
+| < ENABLE_PAGING: "ENABLE_PAGING" >
+| < DISABLE_PAGING: "DISABLE_PAGING" >
+| < SYSTEM_ENTER: "SYSTEM_ENTER" >
+| < SYSTEM_EXIT: "SYSTEM_EXIT" >
+| < DIRECTIVE_4BYTE: ".4byte" >
+| < INCREMENT: "INCREMENT" >
+| < DECREMENT: "DECREMENT" >
+| < SHIFT_LEFT: "SHIFT_LEFT" >
+| < SHIFT_RIGHT: "SHIFT_RIGHT" >
+| < MOD: "MOD" >
+| < CR_TO_GR: "CR_TO_GR" >
+| < GR_TO_CR: "GR_TO_CR" >
+| < DIRECTIVE_FUNCTION: ".function" >
+| < DIRECTIVE_OBJECT: ".object" >
+| < DIRECTIVE_SIZE: ".size" >
+| < DIRECTIVE_GLOBAL: ".global" >
+| < DIRECTIVE_VALUE: ".value" >
+| < OPERATOR_SUBTRACT: "-" >
+| < CURRENT_LOCATION: "$" >
+}
+
+/* WHITE SPACE */
+
+SKIP :
+{
+  " "
+| "\t"
+| "\n"
+| "\r"
+}
+
+/* COMMENTS */
+
+MORE :
+{
+  ";" : IN_SINGLE_LINE_COMMENT
+}
+
+<IN_SINGLE_LINE_COMMENT>
+SPECIAL_TOKEN :
+{
+  <SINGLE_LINE_COMMENT: "\n" | "\r" | "\r\n" > : DEFAULT
+}
+
+<IN_SINGLE_LINE_COMMENT>
+MORE :
+{
+  < ~[] >
+}
+
+/* LITERALS AND IDENTIFIERS */
+
+TOKEN :
+{
+  < HEX_LITERAL: ("-")? (["0"-"9","a"-"f","A"-"F"])+ ["h","H"] >
+|
+  < DECIMAL_LITERAL: ("-")? (["1"-"9"])(["0"-"9"])* >
+|
+  < GENERAL_REGISTER: "r" (["0"-"9"])+ >
+|
+  < CONTROL_REGISTER: "c" (["0"-"9"])+ >
+|
+  < LABEL_DECLARATION: ("_")? ["a"-"z","A"-"Z"] (["a"-"z","A"-"Z","0"-"9"])* ":" >
+|
+  < LABEL: ("_")? (["a"-"z","A"-"Z"])(["a"-"z","A"-"Z","0"-"9"])* >
+}
+
+/* SEPARATORS */
+
+TOKEN :
+{
+  < COMMA: "," >
+}
+
+/*******************************************************
+ * THE SVMJ ASSEMBLY GRAMMAR SPECIFICATION STARTS HERE *
+ *******************************************************/
+
+/** Root production. */
+void Program() :
+{}
+{
+  {
+    count++;
+    if ( !createObject && count != 1 ) {
+      throw new IllegalStateException ( "single pass mode" );
+    }
+    if ( createObject && elfObject == null ) {
+      elfObject = new ELFRam ();
+      
+      txt = elfObject.createSection ( ".text" );
+      stsr = elfObject.createSection ( ".symtab", SymbolTableSectionRAM.class );
+      rsr = elfObject.createSection ( ".rel.text", RelocationSectionRAM.class );
+      strtab = elfObject.createSection ( ".strtab", StringTableSectionRAM.class );
+      shstrtab = elfObject.createSection ( ".shstrtab", StringTableSectionRAM.class );
+    }
+    pb = new ProgramBuilder ();
+  }
+  ( Statement() )*
+  <EOF>
+  {
+    if ( createObject && count == 2 ) {
+      finalizeObject ();
+    }
+  }
+}
+
+void Statement() :
+{}
+{
+  LabelDeclaration ()
+|
+  Directive ()
+|
+  Instruction ()
+}
+
+void Directive () :
+{
+  Token t;
+  int value;
+}
+{
+  <DIRECTIVE_4BYTE>
+  t=<HEX_LITERAL>
+  {
+    value = readHex ( t );
+    pb.memory ( value );
+  }
+  (
+    <COMMA> t=<HEX_LITERAL>
+    {
+      value = readHex ( t );
+      pb.memory ( value );
+    }
+  )*
+}
+
+void Instruction () :
+{}
+{
+  Add ()
+|
+  Subtract ()
+|
+  Multiply ()
+|
+  Divide ()
+|
+  Load ()
+|
+  LoadI ()
+|
+  LoadY ()
+|
+  Load4X ()
+|
+  Store ()
+|
+  Store4X ()
+|
+  StoreY ()
+|
+  Move ()
+|
+  MoveI ()
+|
+  MoveControlToGeneral ()
+|
+  MoveGeneralToControl ()
+|
+  Push ()
+|
+  Pop ()
+|
+  Enter ()
+|
+  Leave ()
+|
+  Call ()
+|
+  CallI ()
+|
+  Return ()
+|
+  Noop ()
+|
+  And ()
+|
+  Or ()
+|
+  Xor ()
+|
+  Not ()
+|
+  Cmp ()
+|
+  CmpZ ()
+|
+  Jump ()
+|
+  JumpI ()
+|
+  JumpY ()
+|
+  JumpE ()
+|
+  JumpEI ()
+|
+  JumpNE ()
+|
+  JumpNEI ()
+|
+  JumpZ ()
+|
+  JumpZI ()
+|
+  JumpNZ ()
+|
+  JumpNZI ()
+|
+  JumpNZY ()
+|
+  Halt ()
+|
+  EnablePaging ()
+|
+  DisablePaging ()
+|
+  TLBFlush ()
+|
+  SystemEnter ()
+|
+  SystemExit ()
+|
+  Increment ()
+|
+  Decrement ()
+|
+  Modulo ()
+|
+  ShiftLeft ()
+|
+  ShiftRight ()
+|
+  DirectiveFunction ()
+|
+  DirectiveObject ()
+|
+  DirectiveGlobal ()
+|
+  DirectiveSize ()
+|
+  DirectiveValue ()
+}
+
+void LabelDeclaration () :
+{
+  Token t;
+  String label;
+  int address;
+}
+{
+  t=<LABEL_DECLARATION>
+  {
+    label = t.image.substring ( 0, t.image.trim ().length () - 1 );
+    if ( createObject ) {
+      // for relocatable object code we use the
+      // offset within the text section
+      // later when run throught the linker
+      // the address can be used calculated
+      address = pb.getCurrentAddress ();
+    } else {
+      // the base address is a global offset
+      address = pb.getCurrentAddress () + baseAddress;
+    }
+    if ( createObject ) {
+      if ( count == 1 ) {
+        SymbolTableSectionRAM.Symbol symbol = stsr.getSymbol ( label );
+        if ( symbol == null ) {
+          symbol = stsr.newSymbol ( label );
+          
+          LOGGER.debug ( "createObject {} pass {} declare label {}=0x{}", createObject, count, label, Integer.toHexString ( address ) );
+          
+          symbol.setValue ( address );
+          // cheating this is the only .text section for now
+          symbol.setSectionHeaderIndex ( 1 );
+        } else {
+          if ( symbol.getSectionHeaderIndex () != Section.SHN_ABS ) {
+            symbol.setValue ( address );
+            // cheating this is the only .text section for now
+            symbol.setSectionHeaderIndex ( 1 );
+          }
+        }
+      }
+      // we ignore declarations on pass #2
+    } else {
+      LOGGER.debug ( "createObject {} pass {} declare label {}=0x{}", createObject, count, label, Integer.toHexString ( address ) );
+      symbolTable.put ( label, address );
+    }
+  }
+}
+
+void Call () :
+{
+  Token t;
+  int r2;
+}
+{
+  <CALL>
+  t=<GENERAL_REGISTER>
+  {
+    r2 = readRegister ( t );
+    pb.call ( r2 );
+  }
+}
+
+void CallI () :
+{
+  Token t;
+  int h1;
+  String label;
+}
+{
+  <CALL_I>
+(
+  t=<HEX_LITERAL>
+  {
+    h1 = readHex ( t );
+    pb.callImmediate ( h1 );
+  }
+|
+  t=<LABEL>
+  {
+    label = t.image.trim ();
+    
+    Consumer < Integer > consumer = new Consumer < Integer >(){ public void accept ( Integer address ) { pb.callImmediate ( address ); } };
+    symbolDereference ( label, RelocationSection.R_SVM_CALL_I, consumer );
+  }
+)
+}
+
+void Return () :
+{
+}
+{
+  <RETURN>
+  {
+    pb.ret ();
+  }
+}
+
+void Push () :
+{
+  Token t;
+  int source;
+}
+{
+  <PUSH>
+  t=<GENERAL_REGISTER>
+  {
+    source = readRegister ( t );
+    pb.push ( source );
+  }
+}
+
+void Pop () :
+{
+  Token t;
+  int destination;
+}
+{
+  <POP>
+  t=<GENERAL_REGISTER>
+  {
+    destination = readRegister ( t );
+    pb.pop ( destination );
+  }
+}
+
+void Enter () :
+{
+}
+{
+  <ENTER>
+  {
+    pb.enter ();
+  }
+}
+
+void Leave () :
+{
+}
+{
+  <LEAVE>
+  {
+    pb.leave ();
+  }
+}
+
+void Store () :
+{
+  Token t;
+  int r1;
+  int r2;
+}
+{
+  <STORE>
+  t=<GENERAL_REGISTER>
+  {
+    r1 = readRegister ( t );
+  }
+  t=<GENERAL_REGISTER>
+  {
+    r2 = readRegister ( t );
+    pb.store ( r1, r2 );
+  }
+}
+
+void Store4X () :
+{
+  Token t;
+  int r1;
+  int r2;
+  int r3;
+}
+{
+  <STORE_4X>
+  t=<GENERAL_REGISTER>
+  {
+    r1 = readRegister ( t );
+  }
+  t=<GENERAL_REGISTER>
+  {
+    r2 = readRegister ( t );
+  }
+  t=<GENERAL_REGISTER>
+  {
+    r3 = readRegister ( t );
+    pb.store4x ( r1, r2, r3 );
+  }
+}
+
+void StoreY () :
+{
+  Token t;
+  int r1;
+  int r2;
+  int d1;
+}
+{
+  <STORE_Y>
+  t=<GENERAL_REGISTER>
+  {
+    r1 = readRegister ( t );
+  }
+  t=<GENERAL_REGISTER>
+  {
+    r2 = readRegister ( t );
+  }
+  t=<DECIMAL_LITERAL>
+  {
+    d1 = readDecimal ( t );
+    pb.storey ( r1, r2, d1 );
+  }
+}
+
+void Load () :
+{
+  Token t;
+  int r1;
+  int r2;
+}
+{
+  <LOAD>
+  t=<GENERAL_REGISTER>
+  {
+    r1 = readRegister ( t );
+  }
+  t=<GENERAL_REGISTER>
+  {
+    r2 = readRegister ( t );
+    pb.load ( r1, r2 );
+  }
+}
+
+void LoadI () :
+{
+  Token t;
+  int r1;
+  int h1;
+  String label;
+}
+{
+  <LOAD_I>
+  t=<GENERAL_REGISTER>
+  {
+    r1 = readRegister ( t );
+  }
+(
+  t=<HEX_LITERAL>
+  {
+    h1 = readHex ( t );
+    pb.loadImmediate ( r1, h1 );
+  }
+|
+  t=<LABEL>
+  {
+    label = t.image.trim ();
+    
+    Consumer < Integer > consumer = new Consumer < Integer >(){public void accept (Integer address){pb.loadImmediate ( r1, address );} };
+    symbolDereference ( label, RelocationSection.R_SVM_LOAD_I, consumer );
+  }
+)
+}
+
+void LoadY () :
+{
+  Token t;
+  int r1;
+  int r2;
+  int d1;
+}
+{
+  <LOAD_Y>
+  t=<GENERAL_REGISTER>
+  {
+    r1 = readRegister ( t );
+  }
+  t=<GENERAL_REGISTER>
+  {
+    r2 = readRegister ( t );
+  }
+  t=<DECIMAL_LITERAL>
+  {
+    d1 = readDecimal ( t );
+    pb.loady ( r1, r2, d1 );
+  }
+}
+
+void Load4X () :
+{
+  Token t;
+  int r1;
+  int r2;
+  int r3;
+}
+{
+  <LOAD_4X>
+  t=<GENERAL_REGISTER>
+  {
+    r1 = readRegister ( t );
+  }
+  t=<GENERAL_REGISTER>
+  {
+    r2 = readRegister ( t );
+  }
+  t=<GENERAL_REGISTER>
+  {
+    r3 = readRegister ( t );
+    pb.load4x ( r1, r2, r3 );
+  }
+}
+
+void Move () :
+{
+  Token t;
+  int r1;
+  int r2;
+}
+{
+  <MOVE>
+  t=<GENERAL_REGISTER>
+  {
+    r1 = readRegister ( t );
+  }
+  t=<GENERAL_REGISTER>
+  {
+    r2 = readRegister ( t );
+    pb.move ( r1, r2 );
+  }
+}
+
+void MoveI () :
+{
+  Token t;
+  int r1;
+  int h1;
+  String label;
+}
+{
+  <MOVE_I>
+  t=<GENERAL_REGISTER>
+  {
+    r1 = readRegister ( t );
+  }
+(
+  t=<HEX_LITERAL>
+  {
+    h1 = readHex ( t );
+    pb.moveImmediate ( r1, h1 );
+  }
+|
+  t=<LABEL>
+  {
+    label = t.image.trim ();
+    
+    Consumer < Integer > consumer = new Consumer < Integer >(){public void accept (Integer address){pb.moveImmediate ( r1, address );} };
+    symbolDereference ( label, RelocationSection.R_SVM_MOVE_I, consumer );
+  }
+)
+}
+
+void MoveControlToGeneral () :
+{
+  Token t;
+  int control;
+  int general;
+}
+{
+  <CR_TO_GR>
+  t=<CONTROL_REGISTER>
+  {
+    control = readRegister ( t );
+  }
+  t=<GENERAL_REGISTER>
+  {
+    general = readRegister ( t );
+    pb.crtogr ( control, general );
+  }
+}
+
+void MoveGeneralToControl () :
+{
+  Token t;
+  int control;
+  int general;
+}
+{
+  <GR_TO_CR>
+  t=<GENERAL_REGISTER>
+  {
+    general = readRegister ( t );
+  }
+  t=<CONTROL_REGISTER>
+  {
+    control = readRegister ( t );
+    pb.grtocr ( general, control );
+  }
+}
+
+void Add() :
+{
+  Token t;
+  int r1;
+  int r2;
+  int r3;
+}
+{
+  <ADD>
+  t=<GENERAL_REGISTER>
+  {
+    r1 = readRegister ( t );
+  }
+  t=<GENERAL_REGISTER>
+  {
+    r2 = readRegister ( t );
+  }
+  t=<GENERAL_REGISTER>
+  {
+    r3 = readRegister ( t );
+    pb.add ( r1, r2, r3 );
+  }
+}
+
+void Subtract() :
+{
+  Token t;
+  int r1;
+  int r2;
+  int r3;
+}
+{
+  <SUBTRACT>
+  t=<GENERAL_REGISTER>
+  {
+    r1 = readRegister ( t );
+  }
+  t=<GENERAL_REGISTER>
+  {
+    r2 = readRegister ( t );
+  }
+  t=<GENERAL_REGISTER>
+  {
+    r3 = readRegister ( t );
+    pb.subtract ( r1, r2, r3 );
+  }
+}
+
+void Multiply() :
+{
+  Token t;
+  int r1;
+  int r2;
+  int r3;
+}
+{
+  <MULTIPLY>
+  t=<GENERAL_REGISTER>
+  {
+    r1 = readRegister ( t );
+  }
+  t=<GENERAL_REGISTER>
+  {
+    r2 = readRegister ( t );
+  }
+  t=<GENERAL_REGISTER>
+  {
+    r3 = readRegister ( t );
+    pb.multiply ( r1, r2, r3 );
+  }
+}
+
+void Divide () :
+{
+  Token t;
+  int r1;
+  int r2;
+  int r3;
+}
+{
+  <DIVIDE>
+  t=<GENERAL_REGISTER>
+  {
+    r1 = readRegister ( t );
+  }
+  t=<GENERAL_REGISTER>
+  {
+    r2 = readRegister ( t );
+  }
+  t=<GENERAL_REGISTER>
+  {
+    r3 = readRegister ( t );
+    pb.divide ( r1, r2, r3 );
+  }
+}
+
+void Modulo () :
+{
+  Token t;
+  int r1;
+  int r2;
+  int r3;
+}
+{
+  <MOD>
+  t=<GENERAL_REGISTER>
+  {
+    r1 = readRegister ( t );
+  }
+  t=<GENERAL_REGISTER>
+  {
+    r2 = readRegister ( t );
+  }
+  t=<GENERAL_REGISTER>
+  {
+    r3 = readRegister ( t );
+    pb.modulo ( r1, r2, r3 );
+  }
+}
+
+void And() :
+{
+  Token t;
+  int r1;
+  int r2;
+  int r3;
+}
+{
+  <AND>
+  t=<GENERAL_REGISTER>
+  {
+    r1 = readRegister ( t );
+  }
+  t=<GENERAL_REGISTER>
+  {
+    r2 = readRegister ( t );
+  }
+  t=<GENERAL_REGISTER>
+  {
+    r3 = readRegister ( t );
+    pb.and ( r1, r2, r3 );
+  }
+}
+
+void Or() :
+{
+  Token t;
+  int r1;
+  int r2;
+  int r3;
+}
+{
+  <OR>
+  t=<GENERAL_REGISTER>
+  {
+    r1 = readRegister ( t );
+  }
+  t=<GENERAL_REGISTER>
+  {
+    r2 = readRegister ( t );
+  }
+  t=<GENERAL_REGISTER>
+  {
+    r3 = readRegister ( t );
+    pb.or ( r1, r2, r3 );
+  }
+}
+
+void Xor() :
+{
+  Token t;
+  int r1;
+  int r2;
+  int r3;
+}
+{
+  <XOR>
+  t=<GENERAL_REGISTER>
+  {
+    r1 = readRegister ( t );
+  }
+  t=<GENERAL_REGISTER>
+  {
+    r2 = readRegister ( t );
+  }
+  t=<GENERAL_REGISTER>
+  {
+    r3 = readRegister ( t );
+    pb.xor ( r1, r2, r3 );
+  }
+}
+
+void Not() :
+{
+  Token t;
+  int r1;
+  int r2;
+}
+{
+  <NOT>
+  t=<GENERAL_REGISTER>
+  {
+    r1 = readRegister ( t );
+  }
+  t=<GENERAL_REGISTER>
+  {
+    r2 = readRegister ( t );
+    pb.not ( r1, r2 );
+  }
+}
+
+void Cmp() :
+{
+  Token t;
+  int r1;
+  int r2;
+}
+{
+  <CMP>
+  t=<GENERAL_REGISTER>
+  {
+    r1 = readRegister ( t );
+  }
+  t=<GENERAL_REGISTER>
+  {
+    r2 = readRegister ( t );
+    pb.compare ( r1, r2 );
+  }
+}
+
+void CmpZ() :
+{
+  Token t;
+  int r1;
+}
+{
+  <CMP_Z>
+  t=<GENERAL_REGISTER>
+  {
+    r1 = readRegister ( t );
+    pb.compareZero ( r1 );
+  }
+}
+
+void Jump () :
+{
+  Token t;
+  int r1;
+}
+{
+  <JUMP>
+  t=<GENERAL_REGISTER>
+  {
+    r1 = readRegister ( t );
+    pb.jump ( r1 );
+  }
+}
+
+void JumpI () :
+{
+  Token t;
+  int h1;
+  String label;
+}
+{
+  <JUMP_I>
+(
+  t=<HEX_LITERAL>
+  {
+    h1 = readHex ( t );
+    pb.jumpImmediate ( h1 );
+  }
+|
+  t=<LABEL>
+  {
+    label = t.image.trim ();
+    
+    Consumer < Integer > consumer = new Consumer < Integer >(){public void accept (Integer address){pb.jumpImmediate ( address );} };
+    symbolDereference ( label, RelocationSection.R_SVM_JUMP_I, consumer );
+  }
+)
+}
+
+void JumpY () :
+{
+  Token t;
+  int d1;
+}
+{
+  <JUMP_Y>
+  t=<DECIMAL_LITERAL>
+  {
+    d1 = readDecimal ( t );
+    pb.jumpY ( d1 );
+  }
+}
+
+void JumpE () :
+{
+  Token t;
+  int r1;
+}
+{
+  <JUMP_E>
+  t=<GENERAL_REGISTER>
+  {
+    r1 = readRegister ( t );
+    pb.jumpEqual ( r1 );
+  }
+}
+
+void JumpEI () :
+{
+  Token t;
+  int h1;
+}
+{
+  <JUMP_E_I>
+  t=<HEX_LITERAL>
+  {
+    h1 = readHex ( t );
+    pb.jumpEqualImmediate ( h1 );
+  }
+}
+
+void JumpNE () :
+{
+  Token t;
+  int r1;
+}
+{
+  <JUMP_NE>
+  t=<GENERAL_REGISTER>
+  {
+    r1 = readRegister ( t );
+    pb.jumpNotEqual ( r1 );
+  }
+}
+
+void JumpNEI () :
+{
+  Token t;
+  int h1;
+}
+{
+  <JUMP_NE_I>
+  t=<HEX_LITERAL>
+  {
+    h1 = readHex ( t );
+    pb.jumpNotEqualImmediate ( h1 );
+  }
+}
+
+void JumpZ () :
+{
+  Token t;
+  int r1;
+}
+{
+  <JUMP_Z>
+  t=<GENERAL_REGISTER>
+  {
+    r1 = readRegister ( t );
+    pb.jumpZero ( r1 );
+  }
+}
+
+void JumpZI () :
+{
+  Token t;
+  int h1;
+}
+{
+  <JUMP_Z_I>
+  t=<HEX_LITERAL>
+  {
+    h1 = readHex ( t );
+    pb.jumpZeroImmediate ( h1 );
+  }
+}
+
+void JumpNZ () :
+{
+  Token t;
+  int r1;
+}
+{
+  <JUMP_NZ>
+  t=<GENERAL_REGISTER>
+  {
+    r1 = readRegister ( t );
+    pb.jumpNotZero ( r1 );
+  }
+}
+
+void JumpNZI () :
+{
+  Token t;
+  int h1;
+  String label;
+}
+{
+  <JUMP_NZ_I>
+(
+  t=<HEX_LITERAL>
+  {
+    h1 = readHex ( t );
+    pb.jumpNotZeroImmediate ( h1 );
+  }
+|
+  t=<LABEL>
+  {
+    label = t.image.trim ();
+    
+    Consumer < Integer > consumer = new Consumer < Integer >(){public void accept (Integer address){pb.jumpNotZeroImmediate ( address );} };
+    symbolDereference ( label, RelocationSection.R_SVM_JUMP_NZ_I, consumer );
+  }
+)
+}
+
+void JumpNZY () :
+{
+  Token t;
+  int d1;
+}
+{
+  <JUMP_NZ_Y>
+  t=<DECIMAL_LITERAL>
+  {
+    d1 = readDecimal ( t );
+    pb.jumpNotZeroY ( d1 );
+  }
+}
+
+void Halt () :
+{}
+{
+  <HALT>
+  {
+    pb.halt ();
+  }
+}
+
+void SystemEnter () :
+{}
+{
+  <SYSTEM_ENTER>
+  {
+    pb.systemEnter ();
+  }
+}
+
+void SystemExit () :
+{}
+{
+  <SYSTEM_EXIT>
+  {
+    pb.systemExit ();
+  }
+}
+
+void Noop() :
+{}
+{
+  <NO_OP>
+  {
+    pb.noop ();
+  }
+}
+
+void EnablePaging() :
+{}
+{
+  <ENABLE_PAGING>
+  {
+    pb.enablePaging ();
+  }
+}
+
+void DisablePaging() :
+{}
+{
+  <DISABLE_PAGING>
+  {
+    pb.disablePaging ();
+  }
+}
+
+void TLBFlush () :
+{}
+{
+  <TLB_FLUSH>
+  {
+    pb.tlbFlush ();
+  }
+}
+
+void Increment () :
+{
+  Token t;
+  int r1;
+}
+{
+  <INCREMENT>
+  t=<GENERAL_REGISTER>
+  {
+    r1 = readRegister ( t );
+    pb.increment ( r1 );
+  }
+}
+
+void Decrement () :
+{
+  Token t;
+  int r1;
+}
+{
+  <DECREMENT>
+  t=<GENERAL_REGISTER>
+  {
+    r1 = readRegister ( t );
+    pb.decrement ( r1 );
+  }
+}
+
+void ShiftLeft () :
+{
+  Token t;
+  int r1;
+  int r2;
+}
+{
+  <SHIFT_LEFT>
+  t=<GENERAL_REGISTER>
+  {
+    r1 = readRegister ( t );
+  }
+  t=<GENERAL_REGISTER>
+  {
+    r2 = readRegister ( t );
+    pb.shiftLeft ( r1, r2 );
+  }
+}
+
+void ShiftRight () :
+{
+  Token t;
+  int r1;
+  int r2;
+}
+{
+  <SHIFT_RIGHT>
+  t=<GENERAL_REGISTER>
+  {
+    r1 = readRegister ( t );
+  }
+  t=<GENERAL_REGISTER>
+  {
+    r2 = readRegister ( t );
+    pb.shiftRight ( r1, r2 );
+  }
+}
+
+void DirectiveFunction () :
+{
+  Token t;
+  String label;
+}
+{
+  <DIRECTIVE_FUNCTION>
+  t=<LABEL>
+  {
+    label = t.image.trim ();
+    if ( createObject ) {
+      SymbolTableSectionRAM.Symbol symbol = stsr.getSymbol ( label );
+      if ( symbol == null ) {
+        symbol = stsr.newSymbol ( label );
+      }
+      symbol.setType ( Section.STT_FUNC );
+    }
+  }
+}
+
+void DirectiveObject () :
+{
+  Token t;
+  String label;
+}
+{
+  <DIRECTIVE_OBJECT>
+  t=<LABEL>
+  {
+    label = t.image.trim ();
+    if ( createObject ) {
+      SymbolTableSectionRAM.Symbol symbol = stsr.getSymbol ( label );
+      if ( symbol == null ) {
+        symbol = stsr.newSymbol ( label );
+      }
+      symbol.setType ( Section.STT_OBJECT );
+    }
+  }
+}
+
+void DirectiveGlobal () :
+{
+  Token t;
+  String label;
+}
+{
+  <DIRECTIVE_GLOBAL>
+  t=<LABEL>
+  {
+    label = t.image.trim ();
+    if ( createObject ) {
+      SymbolTableSectionRAM.Symbol symbol = stsr.getSymbol ( label );
+      if ( symbol == null ) {
+        symbol = stsr.newSymbol ( label );
+      }
+      symbol.setBind ( Section.STB_GLOBAL );
+      List < SymbolTableSectionRAM.Symbol > symbols = stsr.getSymbols ();
+      int firstLocal = stsr.getIndexOfFirstLocal ();
+      if ( firstLocal != -1 ) {
+       // globals are last in the symbol table
+       // if there are local symbols
+       // remove this one and add it to the end of the list
+       symbols.remove ( symbol );
+       symbols.add ( symbol );
+      }
+    }
+  }
+}
+
+void DirectiveSize () :
+{
+  Token t;
+  String label;
+  SymbolTableSectionRAM.Symbol symbol = null;
+  long v1 = 0;
+  long v2 = 0;
+}
+{
+  <DIRECTIVE_SIZE>
+  t=<LABEL>
+  {
+    label = t.image.trim ();
+    if ( createObject ) {
+      symbol = stsr.getSymbol ( label );
+      if ( symbol == null ) {
+        symbol = stsr.newSymbol ( label );
+      }
+    }
+  }
+  (
+  t=<LABEL>
+  {
+    label = t.image.trim ();
+    if ( createObject ) {
+       SymbolTableSectionRAM.Symbol s2 = stsr.getSymbol ( label );
+      if ( s2 == null ) {
+        s2 = stsr.newSymbol ( label );
+      }
+      v1 = s2.getValue ();
+    }
+  }
+  |
+  <CURRENT_LOCATION>
+  {
+    if ( createObject ) {
+      v1 = pb.getCurrentAddress ();
+    }
+  }
+  )
+  <OPERATOR_SUBTRACT>
+  t=<LABEL>
+  {
+    label = t.image.trim ();
+    if ( createObject ) {
+      SymbolTableSectionRAM.Symbol s3 = stsr.getSymbol ( label );
+      if ( s3 == null ) {
+        s3 = stsr.newSymbol ( label );
+      }
+      v2 = s3.getValue ();
+      symbol.setSize ( v1 - v2 );
+    }
+  }
+}
+
+void DirectiveValue () : {
+  Token t;
+  String label;
+  SymbolTableSectionRAM.Symbol symbol = null;
+  long v1 = 0;
+}
+{
+  <DIRECTIVE_VALUE>
+  t=<LABEL>
+  {
+    label = t.image.trim ();
+    if ( createObject ) {
+      symbol = stsr.getSymbol ( label );
+      if ( symbol == null ) {
+        symbol = stsr.newSymbol ( label );
+      }
+    }
+  }
+(
+  t=<LABEL>
+  {
+    label = t.image.trim ();
+    if ( createObject ) {
+       SymbolTableSectionRAM.Symbol s2 = stsr.getSymbol ( label );
+      if ( s2 == null ) {
+        s2 = stsr.newSymbol ( label );
+      }
+      v1 = s2.getValue ();
+      
+      symbol.setValue ( v1 );
+      symbol.setSectionHeaderIndex ( Section.SHN_ABS );
+    }
+  }
+|
+  t=<HEX_LITERAL>
+  {
+    if ( createObject ) {
+      v1 = readHex ( t );
+    }
+    
+    symbol.setValue ( v1 );
+    symbol.setSectionHeaderIndex ( Section.SHN_ABS );
+  }
+)
+}
+

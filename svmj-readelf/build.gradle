@@ -2,7 +2,7 @@
 
 plugins {
   id 'java-library'
-  id 'ca.coglinc.javacc' version "2.4.0"
+  id 'application'
 }
 
 group = 'com.zixradoom'
@@ -20,11 +20,9 @@ repositories {
 }
 
 dependencies {
+  implementation project(':svmj-core')
   implementation 'org.slf4j:slf4j-api:2.0.0-alpha1'
-
-  testImplementation 'org.junit.jupiter:junit-jupiter-api:5.3.1'
-  testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.3.1'
-  testRuntimeOnly 'org.slf4j:slf4j-simple:2.0.0-alpha1'
+  runtimeOnly 'org.slf4j:slf4j-simple:2.0.0-alpha1'
 }
 
 javadoc {
@@ -36,11 +34,12 @@ javadoc {
   }
 }
 
-test {
-  useJUnitPlatform ()
-  
-  jvmArgs += [
-    "-Dorg.slf4j.simpleLogger.defaultLogLevel=debug"
+application {
+  mainModule = 'com.zixradoom.examples.svmj.readelf'
+  mainClass = 'com.zixradoom.examples.svmj.readelf.Driver'
+  applicationDefaultJvmArgs = [
+    '-Xmx1g',
+    "-Dorg.slf4j.simpleLogger.defaultLogLevel=info"
   ]
 }
 

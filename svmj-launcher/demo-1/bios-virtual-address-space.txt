@@ -1,0 +1,7 @@
+## byte addressable
+## NOTE these are addressable addresses
+==============================
+0x0-0xFFBFFFFF
+==============================
+‭‬400000 (4194304) 4 MiB
+100000000 (4294967296) 4 GiB

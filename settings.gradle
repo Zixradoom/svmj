@@ -1,2 +1,6 @@
 
-include 'svmj-core'
+
+include ':svmj-core'
+include ':svmj-launcher'
+include ':svmj-readelf'
+include ':svmj-assembler'

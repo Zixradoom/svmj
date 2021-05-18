@@ -1,0 +1,6 @@
+driver=com.zixradoom.examples.svmj.core.SimpleROM
+name=bios demo 2
+base.address=0
+source.dir=bios
+source.bin=bios-obj
+source.bios=true

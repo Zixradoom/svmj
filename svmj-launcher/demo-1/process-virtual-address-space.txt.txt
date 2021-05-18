@@ -1,0 +1,19 @@
+
+## byte addressable
+## NOTE these are addressable addresses
+
+we have a 32 bit address space
+‭‬we cannot map the last 4 MiB as
+the page directory for a process has
+a recursive entry at the last index
+
+400000h (4194304) 4 MiB 
+100000000h (4294967296) 4 GiB
+
+==============================
+User Space
+0x0-0xBFBFFFFF
+==============================
+Kernel Space
+0xBFC00000-0xFFBFFFFF
+==============================

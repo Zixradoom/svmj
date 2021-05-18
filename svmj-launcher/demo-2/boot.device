@@ -1,0 +1,5 @@
+driver=com.zixradoom.examples.svmj.core.SimpleROM
+name=boot loader demo 2
+base.address=16384
+source.dir=boot
+source.bin=boot-obj

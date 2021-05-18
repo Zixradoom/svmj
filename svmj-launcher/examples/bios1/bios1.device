@@ -1,0 +1,3 @@
+name=example bios 1
+base.address=0
+source=bios1.asm

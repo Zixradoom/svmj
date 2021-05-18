@@ -1,0 +1,35 @@
+_start:
+  ADD r4 r5 r6
+  SUBTRACT r7 r8 r9
+  MULTIPLY r10 r11 r12
+  DIVIDE r10 r11 r12
+  LOAD r1 r2
+  LOAD_I r10 11H
+stuff:
+moreStuff:
+  STORE r1 r2
+  MOVE r1 r2
+  MOVE_I r10 11H
+  PUSH r10 r11
+  POP r10 r11
+  ENTER r10 r11
+  LEAVE r10 r11
+  CALL r10 r11
+  RETURN r13
+  NO_OP
+  AND r10 r11 r12
+  OR r10 r11 r12
+  XOR r10 r11 r12
+  NOT r10 r11
+  CMP r10 r11
+  JUMP r7
+  JUMP_I 7FH
+  JUMP_E r1
+  JUMP_E_I 7FH
+  JUMP_NE r1
+  JUMP_NE_I 7FH
+  JUMP_Z r1
+  JUMP_Z_I 7FH
+  JUMP_NZ r1
+  JUMP_NZ_I 7FH
+  HALT
