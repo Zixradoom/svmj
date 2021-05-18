@@ -1,5 +1,5 @@
 
-package com.zixradoom.svmj.launcher.device;
+package com.zixradoom.examples.svmj.launcher.device;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -8,9 +8,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Properties;
 
-import com.zixradoom.svmj.core.Device;
-import com.zixradoom.svmj.core.ProgramBuilder;
-import com.zixradoom.svmj.core.SimpleROM;
+import com.zixradoom.examples.svmj.core.Device;
+import com.zixradoom.examples.svmj.core.ProgramBuilder;
+import com.zixradoom.examples.svmj.core.SimpleROM;
 
 public final class SimpleROMFactory implements DeviceFactory {
 
@@ -24,12 +24,12 @@ public final class SimpleROMFactory implements DeviceFactory {
 		Path source = propsFile.getParent ().resolve ( sourceFile );
 		try ( InputStream is = Files.newInputStream ( source ) ) {
 			ProgramBuilder pb = new ProgramBuilder ();
-			rom = pb.getImage ();
+			rom = pb.getProgram ();
 		} catch ( IOException e ) {
 			throw new RuntimeException ( e );
 		}
 		
-		return new SimpleROM ( name, baseAddress, rom );
+		return new SimpleROM ( name, (int)baseAddress, rom );
 	}
 
 	@Override

@@ -1,5 +1,5 @@
 
-package com.zixradoom.svmj.launcher.device;
+package com.zixradoom.examples.svmj.launcher.device;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -11,7 +11,7 @@ import java.util.List;
 import java.util.Properties;
 import java.util.ServiceLoader;
 
-import com.zixradoom.svmj.core.Device;
+import com.zixradoom.examples.svmj.core.Device;
 
 public final class Devices {
 	

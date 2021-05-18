@@ -4,4 +4,6 @@ module com.zixradoom.examples.svmj.launcher {
   requires com.zixradoom.examples.svmj.core;
   requires com.zixradoom.examples.svmj.assembler;
   exports com.zixradoom.examples.svmj.launcher;
+  
+  uses com.zixradoom.examples.svmj.launcher.device.DeviceFactory;
 }
